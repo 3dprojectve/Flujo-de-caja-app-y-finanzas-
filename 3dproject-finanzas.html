@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="3dproject" />
+  <title>3dproject.ve — Finanzas</title>
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Lora:wght@400;600&display=swap" rel="stylesheet" />
+
+  <!-- PWA Manifest via Blob -->
+  <script>
+    (() => {
+      const m = { name:"3dproject.ve Finanzas", short_name:"3dproject", start_url:".",
+        display:"standalone", background_color:"#f6f5f2", theme_color:"#ffffff",
+        icons:[{src:"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%232d6a4f'/><text y='.85em' font-size='58' x='50' text-anchor='middle' fill='white' font-family='sans-serif'>$</text></svg>",sizes:"192x192",type:"image/svg+xml"}]};
+      const l = document.createElement('link');
+      l.rel = 'manifest';
+      l.href = URL.createObjectURL(new Blob([JSON.stringify(m)],{type:'application/json'}));
+      document.head.appendChild(l);
+    })();
+  </script>
+
+  <!-- Service Worker via Blob -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      const sw = `const C='3dp-v2';
+self.addEventListener('install',e=>e.waitUntil(caches.open(C).then(c=>c.addAll(['.']))));
+self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==C).map(k=>caches.delete(k))))));
+self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(fetch(e.request).then(r=>{const rc=r.clone();caches.open(C).then(c=>c.put(e.request,rc));return r;}).catch(()=>caches.match(e.request)));});`;
+      navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw],{type:'application/javascript'}))).catch(()=>{});
+    }
+  </script>
+
+  <!-- Firebase SDK v11 -->
+  <script type="module">
+    import { initializeApp }
+      from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+      from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+    import { getFirestore, collection, addDoc, onSnapshot,
+             query, orderBy, deleteDoc, doc, serverTimestamp }
+      from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey:            "AIzaSyAfaZgFvqJSmJTv3F0szctki4Y-X9tZcsw",
+      authDomain:        "dprojectve.firebaseapp.com",
+      projectId:         "dprojectve",
+      storageBucket:     "dprojectve.firebasestorage.app",
+      messagingSenderId: "512478778863",
+      appId:             "1:512478778863:web:98d700575349eef775121a",
+      measurementId:     "G-W7GN3SM6GP"
+    };
+
+    const app  = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+
+    // ─── State ────────────────────────────────
+    let currentUser = null;
+    let allTxs      = [];
+    let unsubTxs    = null;
+    let bcvRate     = 0;
+    let parRate     = 0;
+    let activeTab   = 'dashboard';
+    let filterCat   = '';
+    let filterFrom  = '';
+    let filterTo    = '';
+
+    const CATEGORIES = ['Ventas','Pago a Proveedores','Inversión','Pago a Socios','Gastos Operativos'];
+    const METHODS    = ['Pago Móvil','Zelle','Binance','PayPal','Efectivo'];
+    const M_ICONS    = {
+      'Pago Móvil':'fa-mobile-screen',
+      'Zelle':'fa-building-columns',
+      'Binance':'fa-bitcoin-sign',
+      'PayPal':'fa-paypal',
+      'Efectivo':'fa-money-bill-wave'
+    };
+
+    const fmt  = v => new Intl.NumberFormat('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v);
+    const fmtD = d => {
+      const dt = d?.seconds ? new Date(d.seconds*1000) : new Date(d);
+      return dt.toLocaleDateString('es-VE',{day:'2-digit',month:'short',year:'numeric'});
+    };
+
+    // ─── BCV API ──────────────────────────────
+    async function fetchRates() {
+      try {
+        const res  = await fetch('https://ve.dolarapi.com/v1/dolares');
+        const data = await res.json();
+        const bcv = data.find(d =>
+          d.fuente?.toLowerCase()==='oficial' || d.nombre?.toLowerCase().includes('oficial'));
+        const par = data.find(d =>
+          d.fuente?.toLowerCase()==='paralelo' || d.nombre?.toLowerCase().includes('paralelo'));
+        if (bcv) bcvRate = parseFloat(bcv.promedio ?? bcv.venta ?? bcv.compra ?? 0);
+        if (par) parRate = parseFloat(par.promedio ?? par.venta ?? par.compra ?? 0);
+      } catch(_) {}
+      updateRatePills();
+    }
+
+    function updateRatePills() {
+      const b = document.getElementById('bcv-pill');
+      const p = document.getElementById('par-pill');
+      if (b) b.textContent = bcvRate > 0 ? `BCV Bs.${fmt(bcvRate)}` : 'BCV —';
+      if (p) p.textContent = parRate > 0 ? `Par Bs.${fmt(parRate)}` : 'Par —';
+      updateConverter();
+    }
+
+    window.updateConverter = function() {
+      const usd = parseFloat(document.getElementById('conv-usd')?.value) || 0;
+      const pv  = parseFloat(document.getElementById('par-rate-input')?.value) || parRate;
+      const el1 = document.getElementById('conv-bcv');
+      const el2 = document.getElementById('conv-par');
+      if (el1) el1.textContent = `Bs. ${fmt(usd * bcvRate)}`;
+      if (el2) el2.textContent = `Bs. ${fmt(usd * pv)}`;
+    };
+
+    // ─── Auth ─────────────────────────────────
+    onAuthStateChanged(auth, user => {
+      currentUser = user;
+      if (user) {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app-shell').style.display    = 'flex';
+        fetchRates();
+        subscribeData();
+      } else {
+        document.getElementById('login-screen').style.display = 'flex';
+        document.getElementById('app-shell').style.display    = 'none';
+        if (unsubTxs) { unsubTxs(); unsubTxs = null; }
+      }
+    });
+
+    window.doLogin = async () => {
+      const email = document.getElementById('email').value.trim();
+      const pass  = document.getElementById('pass').value;
+      const err   = document.getElementById('login-err');
+      const btn   = document.getElementById('login-btn');
+      err.textContent = ''; btn.textContent = 'Ingresando…'; btn.disabled = true;
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch(e) {
+        err.textContent = 'Correo o contraseña incorrectos.';
+        btn.textContent = 'Ingresar'; btn.disabled = false;
+      }
+    };
+    window.doLogout = () => signOut(auth);
+
+    // ─── Firestore ────────────────────────────
+    function subscribeData() {
+      const q = query(
+        collection(db,'users',currentUser.uid,'transactions'),
+        orderBy('date','desc')
+      );
+      unsubTxs = onSnapshot(q, snap => {
+        allTxs = snap.docs.map(d => ({id:d.id,...d.data()}));
+        render();
+      });
+    }
+
+    window.saveTx = async () => {
+      const concept = document.getElementById('f-concept').value.trim();
+      const amount  = parseFloat(document.getElementById('f-amount').value.replace(',','.'));
+      const type    = document.getElementById('f-type').value;
+      const cat     = document.getElementById('f-cat').value;
+      const method  = document.getElementById('f-method').value;
+      const dateStr = document.getElementById('f-date').value;
+      const parUsed = parseFloat(document.getElementById('f-par-rate').value) || parRate;
+
+      if (!concept || !amount || !dateStr) { showToast('Completa todos los campos','err'); return; }
+
+      await addDoc(collection(db,'users',currentUser.uid,'transactions'), {
+        concept, amount, type, category: cat, paymentMethod: method,
+        bcvRate, parRate: parUsed,
+        date: new Date(dateStr+'T12:00:00'),
+        createdAt: serverTimestamp()
+      });
+      document.getElementById('tx-form').reset();
+      document.getElementById('f-date').value = new Date().toISOString().slice(0,10);
+      closeForm();
+      showToast('Guardado correctamente');
+    };
+
+    window.deleteTx = async id => {
+      if (!confirm('¿Eliminar esta transacción?')) return;
+      await deleteDoc(doc(db,'users',currentUser.uid,'transactions',id));
+      showToast('Eliminado');
+    };
+
+    // ─── Navigation ───────────────────────────
+    window.goTab = tab => {
+      activeTab = tab;
+      document.querySelectorAll('.nav-item').forEach(b =>
+        b.classList.toggle('active', b.dataset.tab === tab));
+      render();
+    };
+
+    window.applyFilter = () => {
+      filterCat  = document.getElementById('fil-cat')?.value  || '';
+      filterFrom = document.getElementById('fil-from')?.value || '';
+      filterTo   = document.getElementById('fil-to')?.value   || '';
+      render();
+    };
+    window.clearFilter = () => {
+      filterCat = filterFrom = filterTo = ''; render();
+    };
+
+    window.openForm = () => {
+      document.getElementById('tx-form').reset();
+      document.getElementById('f-date').value = new Date().toISOString().slice(0,10);
+      document.getElementById('f-type').value = 'Ingreso';
+      document.getElementById('f-par-rate').value = parRate > 0 ? parRate.toFixed(2) : '';
+      const ri = document.getElementById('form-rate-info');
+      if (ri) ri.textContent = bcvRate>0 ? `BCV del día: Bs. ${fmt(bcvRate)}` : '';
+      document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('sel-in','sel-out'));
+      document.querySelector('.type-btn[data-v="Ingreso"]').classList.add('sel-in');
+      document.getElementById('modal-title').textContent = 'Nueva transacción';
+      document.getElementById('tx-modal').style.display = 'flex';
+    };
+    window.closeForm = () => {
+      document.getElementById('tx-modal').style.display = 'none';
+    };
+
+    // ─── Toast ────────────────────────────────
+    function showToast(msg, type='ok') {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast show' + (type==='err'?' err':'');
+      setTimeout(() => t.className = 'toast', 3000);
+    }
+
+    // ─── Render ───────────────────────────────
+    function render() {
+      if      (activeTab==='dashboard') renderDashboard();
+      else if (activeTab==='converter') renderConverter();
+      else if (activeTab==='history')   renderHistory();
+      else if (activeTab==='settings')  renderSettings();
+    }
+
+    function filteredTxs() {
+      return allTxs.filter(tx => {
+        if (filterCat && tx.category !== filterCat) return false;
+        const d = tx.date?.seconds ? new Date(tx.date.seconds*1000) : new Date(tx.date);
+        if (filterFrom && d < new Date(filterFrom)) return false;
+        if (filterTo   && d > new Date(filterTo+'T23:59:59')) return false;
+        return true;
+      });
+    }
+
+    // ─── Dashboard ────────────────────────────
+    function renderDashboard() {
+      const income  = allTxs.filter(t=>t.type==='Ingreso').reduce((s,t)=>s+t.amount,0);
+      const expense = allTxs.filter(t=>t.type==='Egreso').reduce((s,t)=>s+t.amount,0);
+      const net     = income - expense;
+      const byMethod = {};
+      METHODS.forEach(m => byMethod[m] = 0);
+      allTxs.forEach(t => {
+        byMethod[t.paymentMethod] = (byMethod[t.paymentMethod]||0) +
+          (t.type==='Ingreso' ? t.amount : -t.amount);
+      });
+      const pct = income+expense > 0 ? Math.round((income/(income+expense))*100) : 0;
+
+      document.getElementById('main-content').innerHTML = `
+        <div class="page-title">Resumen</div>
+
+        <div class="kpi-row">
+          <div class="kpi kpi--main">
+            <div class="kpi-label">Flujo neto</div>
+            <div class="kpi-value ${net>=0?'pos':'neg'}">$${fmt(net)}</div>
+            <div class="kpi-sub">
+              Bs. ${fmt(net*bcvRate)}
+              <span class="rate-tag">BCV</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" style="width:${pct}%"></div>
+            </div>
+            <div class="progress-labels">
+              <span>Ingresos ${pct}%</span>
+              <span>Egresos ${100-pct}%</span>
+            </div>
+          </div>
+          <div class="kpi-col">
+            <div class="kpi kpi--sm">
+              <div class="kpi-label">Ingresos</div>
+              <div class="kpi-value pos">$${fmt(income)}</div>
+              <div class="kpi-sub">Bs. ${fmt(income*bcvRate)}</div>
+            </div>
+            <div class="kpi kpi--sm">
+              <div class="kpi-label">Egresos</div>
+              <div class="kpi-value neg">$${fmt(expense)}</div>
+              <div class="kpi-sub">Bs. ${fmt(expense*bcvRate)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-label">Por método de pago</div>
+        <div class="methods-grid">
+          ${METHODS.map(m => {
+            const v = byMethod[m]||0;
+            return `<div class="method-card">
+              <div class="method-top">
+                <i class="fa-solid ${M_ICONS[m]} method-icon"></i>
+                <span class="method-name">${m}</span>
+              </div>
+              <div class="method-usd ${v>=0?'pos':'neg'}">$${fmt(v)}</div>
+              <div class="method-ves">Bs. ${fmt(v*bcvRate)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+
+        <div class="section-label">Últimas transacciones</div>
+        <div class="tx-list">
+          ${allTxs.slice(0,6).length===0
+            ? '<div class="empty">Aún no hay transacciones</div>'
+            : allTxs.slice(0,6).map(tx => txRowHTML(tx, false)).join('')}
+        </div>`;
+    }
+
+    // ─── Converter ────────────────────────────
+    function renderConverter() {
+      document.getElementById('main-content').innerHTML = `
+        <div class="page-title">Conversor USD</div>
+
+        <div class="converter-card">
+          <div class="conv-label">Ingresa el monto en dólares</div>
+          <div class="conv-input-wrap">
+            <span class="conv-prefix">$</span>
+            <input id="conv-usd" type="number" step="0.01" min="0"
+              placeholder="0.00" oninput="updateConverter()" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="rates-row">
+          <div class="rate-card rate-bcv">
+            <div class="rate-header">
+              <i class="fa-solid fa-landmark"></i>
+              <span>Oficial (BCV)</span>
+            </div>
+            <div class="rate-value">Bs. ${bcvRate>0?fmt(bcvRate):'—'}</div>
+            <div class="rate-divider"></div>
+            <div class="rate-result-label">Equivalente</div>
+            <div class="rate-result pos" id="conv-bcv">Bs. 0,00</div>
+          </div>
+
+          <div class="rate-card rate-par">
+            <div class="rate-header">
+              <i class="fa-solid fa-chart-line"></i>
+              <span>Paralelo</span>
+            </div>
+            <div class="rate-editable">
+              <span class="rate-edit-prefix">Bs.</span>
+              <input id="par-rate-input" type="number" step="0.01"
+                value="${parRate>0?parRate.toFixed(2):''}"
+                placeholder="${parRate>0?fmt(parRate):'editar'}"
+                oninput="updateConverter()" />
+              <i class="fa-solid fa-pen-to-square" style="color:var(--text3);font-size:11px"></i>
+            </div>
+            <div class="rate-divider"></div>
+            <div class="rate-result-label">Equivalente</div>
+            <div class="rate-result" id="conv-par" style="color:#7a5c05">Bs. 0,00</div>
+          </div>
+        </div>
+
+        <div class="conv-hint">
+          <i class="fa-solid fa-circle-info"></i>
+          Tasas obtenidas de dolarapi.com · La tasa paralelo es editable manualmente.
+        </div>`;
+
+      setTimeout(updateConverter, 30);
+    }
+
+    // ─── History ──────────────────────────────
+    function renderHistory() {
+      const txs = filteredTxs();
+      document.getElementById('main-content').innerHTML = `
+        <div class="page-title">Historial</div>
+        <div class="filter-row">
+          <select id="fil-cat" onchange="applyFilter()">
+            <option value="">Todas las categorías</option>
+            ${CATEGORIES.map(c=>`<option value="${c}" ${filterCat===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+          <input type="date" id="fil-from" value="${filterFrom}" onchange="applyFilter()" />
+          <input type="date" id="fil-to"   value="${filterTo}"   onchange="applyFilter()" />
+          ${filterCat||filterFrom||filterTo
+            ? `<button class="btn-clear" onclick="clearFilter()">
+                 <i class="fa-solid fa-xmark"></i> Limpiar
+               </button>` : ''}
+        </div>
+        <div class="tx-count">${txs.length} registro${txs.length!==1?'s':''}</div>
+        <div class="tx-list">
+          ${txs.length===0
+            ? '<div class="empty">Sin resultados para este filtro</div>'
+            : txs.map(tx => txRowHTML(tx, true)).join('')}
+        </div>`;
+    }
+
+    // ─── Settings ─────────────────────────────
+    function renderSettings() {
+      document.getElementById('main-content').innerHTML = `
+        <div class="page-title">Ajustes</div>
+
+        <div class="settings-section">
+          <div class="settings-label">
+            <i class="fa-solid fa-rotate"></i> Tasas del día
+          </div>
+          <div class="settings-desc">
+            Obtenidas automáticamente de <strong>ve.dolarapi.com</strong> al iniciar la app.
+          </div>
+          <div class="rates-summary">
+            <div class="rate-summary-row">
+              <span><i class="fa-solid fa-landmark" style="color:var(--green);margin-right:6px"></i>BCV Oficial</span>
+              <strong class="pos">Bs. ${bcvRate>0?fmt(bcvRate):'—'}</strong>
+            </div>
+            <div class="rate-summary-row">
+              <span><i class="fa-solid fa-chart-line" style="color:#7a5c05;margin-right:6px"></i>Paralelo</span>
+              <strong>Bs. ${parRate>0?fmt(parRate):'—'}</strong>
+            </div>
+          </div>
+          <button class="btn-action" onclick="window.refetchRates()">
+            <i class="fa-solid fa-arrows-rotate"></i> Actualizar tasas
+          </button>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-label">
+            <i class="fa-solid fa-user"></i> Cuenta
+          </div>
+          <div class="user-row">
+            <div class="user-initial">${(currentUser?.email?.[0]||'').toUpperCase()}</div>
+            <div>
+              <div class="user-email">${currentUser?.email}</div>
+              <div class="user-role">Administrador · 3dproject.ve</div>
+            </div>
+          </div>
+          <button class="btn-logout" onclick="doLogout()">
+            <i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión
+          </button>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-label">
+            <i class="fa-solid fa-mobile-screen"></i> Instalar como app
+          </div>
+          <div class="install-row">
+            <strong>iPhone / Safari</strong> — Compartir → Agregar a inicio
+          </div>
+          <div class="install-row">
+            <strong>Chrome / Edge</strong> — Clic en ⊕ en la barra de URL
+          </div>
+        </div>`;
+    }
+
+    window.refetchRates = async () => {
+      showToast('Actualizando…');
+      await fetchRates();
+      render();
+      showToast('Tasas actualizadas ✓');
+    };
+
+    // ─── TX Row HTML ──────────────────────────
+    function txRowHTML(tx, full) {
+      const isInc = tx.type === 'Ingreso';
+      const d = tx.date?.seconds ? tx.date : { seconds: new Date(tx.date).getTime()/1000 };
+      return `<div class="tx-item">
+        <div class="tx-dot ${isInc?'dot-in':'dot-out'}"></div>
+        <div class="tx-body">
+          <div class="tx-concept">${tx.concept}</div>
+          <div class="tx-meta">
+            ${tx.category}${full?` · ${tx.paymentMethod}`:''} · ${fmtD(d)}
+          </div>
+          ${full && tx.bcvRate
+            ? `<div class="tx-rates">
+                BCV Bs.${fmt(tx.bcvRate)}
+                ${tx.parRate ? `· Par Bs.${fmt(tx.parRate)}` : ''}
+               </div>` : ''}
+        </div>
+        <div class="tx-right">
+          <div class="tx-amt ${isInc?'pos':'neg'}">${isInc?'+':'-'}$${fmt(tx.amount)}</div>
+          ${full ? `<button class="icon-btn del" onclick="deleteTx('${tx.id}')">
+            <i class="fa-solid fa-trash-can"></i>
+          </button>` : ''}
+        </div>
+      </div>`;
+    }
+
+    // ─── Init ─────────────────────────────────
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('f-date').value = new Date().toISOString().slice(0,10);
+      document.querySelectorAll('.type-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.type-btn').forEach(b =>
+            b.classList.remove('sel-in','sel-out'));
+          const v = btn.dataset.v;
+          btn.classList.add(v==='Ingreso'?'sel-in':'sel-out');
+          document.getElementById('f-type').value = v;
+        });
+      });
+    });
+  </script>
+
+  <style>
+    /* ════════════════════════════════════════
+       DESIGN · Clean Minimal · Sage Green
+    ════════════════════════════════════════ */
+    :root {
+      --bg:       #f6f5f2;
+      --surface:  #ffffff;
+      --border:   #e5e3de;
+      --border2:  #cdc9c1;
+      --text:     #1c1c1a;
+      --text2:    #6b6860;
+      --text3:    #aba89f;
+      --green:    #2d6a4f;
+      --green-lt: #eef5f1;
+      --pos:      #1e7a50;
+      --neg:      #b84040;
+      --amber:    #7a5c05;
+      --font:     'Plus Jakarta Sans', sans-serif;
+      --serif:    'Lora', serif;
+      --r:        10px;
+      --r-sm:     7px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; background: var(--bg); color: var(--text);
+      font-family: var(--font); font-size: 15px; -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── LOGIN ──────────────────────────────── */
+    #login-screen {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px;
+    }
+    .login-wrap { width: 100%; max-width: 340px; animation: up .35s ease; }
+    .login-brand { margin-bottom: 28px; }
+    .login-brand h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; letter-spacing: -.2px; }
+    .login-brand h1 span { color: var(--green); }
+    .login-brand p { color: var(--text2); font-size: 14px; margin-top: 3px; }
+    .login-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 24px; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 5px; }
+    .field input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-family: var(--font); font-size: 15px; padding: 10px 13px; outline: none; transition: border-color .15s; }
+    .field input:focus { border-color: var(--green); }
+    .field input::placeholder { color: var(--text3); }
+    #login-btn { width: 100%; margin-top: 6px; padding: 12px; background: var(--green); border: none; border-radius: var(--r-sm); color: #fff; font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+    #login-btn:hover { opacity: .87; }
+    #login-btn:disabled { opacity: .5; cursor: default; }
+    #login-err { color: var(--neg); font-size: 13px; text-align: center; margin-top: 10px; min-height: 16px; }
+
+    /* ── SHELL ──────────────────────────────── */
+    #app-shell { display: none; flex-direction: column; height: 100dvh; overflow: hidden; }
+
+    /* ── TOPBAR ─────────────────────────────── */
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 54px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 8px; }
+    .brand { font-family: var(--serif); font-size: 17px; font-weight: 600; white-space: nowrap; }
+    .brand span { color: var(--green); }
+    .topbar-rates { display: flex; gap: 5px; flex-shrink: 0; }
+    .rate-pill { font-size: 11px; font-weight: 600; border-radius: 20px; padding: 3px 9px; white-space: nowrap; }
+    #bcv-pill { color: var(--green); background: var(--green-lt); border: 1px solid #ccddd5; }
+    #par-pill { color: var(--amber); background: #fffbeb; border: 1px solid #f0e0a0; }
+
+    /* ── LAYOUT ─────────────────────────────── */
+    .app-body { display: flex; flex: 1; overflow: hidden; }
+    .sidenav { display: none; flex-direction: column; width: 172px; background: var(--surface); border-right: 1px solid var(--border); padding: 16px 10px; gap: 2px; flex-shrink: 0; }
+    @media (min-width: 720px) { .sidenav { display: flex; } .bottomnav { display: none !important; } }
+    .nav-item { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-radius: var(--r-sm); border: none; background: transparent; color: var(--text2); font-family: var(--font); font-size: 14px; font-weight: 500; cursor: pointer; transition: all .12s; text-align: left; width: 100%; }
+    .nav-item:hover { background: var(--bg); color: var(--text); }
+    .nav-item.active { background: var(--green-lt); color: var(--green); font-weight: 600; }
+    .nav-item i { width: 15px; text-align: center; font-size: 13px; }
+    .bottomnav { display: flex; background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0; }
+    .bottomnav .nav-item { flex: 1; flex-direction: column; gap: 3px; padding: 9px 4px; font-size: 10px; border-radius: 0; }
+    .bottomnav .nav-item i { font-size: 17px; width: auto; }
+
+    /* ── MAIN ───────────────────────────────── */
+    #main-content { flex: 1; overflow-y: auto; padding: 22px 16px 96px; }
+    @media (min-width: 720px) { #main-content { padding: 28px 28px 80px; max-width: 860px; } }
+    .page-title { font-family: var(--serif); font-size: 21px; font-weight: 600; margin-bottom: 18px; }
+    .section-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; color: var(--text3); margin-bottom: 10px; }
+
+    /* ── KPI ────────────────────────────────── */
+    .kpi-row { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }
+    .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; }
+    .kpi--main { flex: 2; min-width: 180px; }
+    .kpi-col   { flex: 1; min-width: 120px; display: flex; flex-direction: column; gap: 10px; }
+    .kpi--sm   { padding: 13px 15px; }
+    .kpi-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 5px; }
+    .kpi-value { font-size: 24px; font-weight: 700; letter-spacing: -.5px; line-height: 1; }
+    .kpi--sm .kpi-value { font-size: 18px; }
+    .kpi-sub   { font-size: 12px; color: var(--text3); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+    .rate-tag  { font-size: 10px; background: var(--green-lt); color: var(--green); border-radius: 4px; padding: 1px 5px; font-weight: 600; }
+    .pos { color: var(--pos); } .neg { color: var(--neg); }
+    .progress-track { height: 3px; background: var(--border); border-radius: 2px; margin-top: 12px; overflow: hidden; }
+    .progress-fill  { height: 100%; background: var(--green); border-radius: 2px; transition: width .5s ease; }
+    .progress-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+    /* ── METHODS ────────────────────────────── */
+    .methods-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(110px,1fr)); gap: 8px; margin-bottom: 24px; }
+    .method-card  { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 12px; }
+    .method-top   { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+    .method-icon  { color: var(--green); font-size: 13px; width: 16px; text-align: center; }
+    .method-name  { font-size: 11px; font-weight: 600; color: var(--text2); }
+    .method-usd   { font-size: 14px; font-weight: 700; }
+    .method-ves   { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+    /* ── TX LIST ────────────────────────────── */
+    .tx-list { display: flex; flex-direction: column; }
+    .tx-item { display: flex; align-items: center; gap: 11px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+    .tx-item:last-child { border-bottom: none; }
+    .tx-dot  { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-in  { background: var(--pos); } .dot-out { background: var(--neg); }
+    .tx-body { flex: 1; min-width: 0; }
+    .tx-concept { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tx-meta    { font-size: 12px; color: var(--text3); margin-top: 2px; }
+    .tx-rates   { font-size: 11px; color: var(--text3); margin-top: 1px; }
+    .tx-amt     { font-size: 14px; font-weight: 600; white-space: nowrap; }
+    .tx-right   { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+    .icon-btn   { font-size: 12px; color: var(--text3); background: none; border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; cursor: pointer; transition: all .12s; }
+    .icon-btn.del:hover { color: var(--neg); border-color: var(--neg); }
+    .empty    { text-align: center; color: var(--text3); font-size: 14px; padding: 40px 0; }
+    .tx-count { font-size: 12px; color: var(--text3); margin-bottom: 8px; }
+
+    /* ── FILTERS ────────────────────────────── */
+    .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .filter-row select,
+    .filter-row input[type="date"] { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-family: var(--font); font-size: 13px; padding: 7px 10px; outline: none; }
+    .filter-row select:focus, .filter-row input:focus { border-color: var(--green); }
+    .btn-clear { background: none; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text2); font-family: var(--font); font-size: 13px; padding: 7px 12px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+    .btn-clear:hover { border-color: var(--neg); color: var(--neg); }
+
+    /* ── CONVERTER ──────────────────────────── */
+    .converter-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 18px; margin-bottom: 14px; }
+    .conv-label { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 10px; }
+    .conv-input-wrap { display: flex; align-items: stretch; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; transition: border-color .15s; }
+    .conv-input-wrap:focus-within { border-color: var(--green); }
+    .conv-prefix { padding: 0 14px; font-size: 17px; font-weight: 700; color: var(--green); background: var(--green-lt); border-right: 1px solid var(--border); display: flex; align-items: center; }
+    .conv-input-wrap input { flex: 1; background: transparent; border: none; outline: none; font-family: var(--font); font-size: 24px; font-weight: 700; color: var(--text); padding: 12px 14px; letter-spacing: -.3px; min-width: 0; }
+
+    .rates-row { display: flex; gap: 10px; margin-bottom: 14px; }
+    .rate-card { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 14px; }
+    .rate-bcv  { border-top: 3px solid var(--green); }
+    .rate-par  { border-top: 3px solid #e0a030; }
+    .rate-header { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 5px; }
+    .rate-header i { color: var(--green); font-size: 12px; }
+    .rate-par .rate-header i { color: var(--amber); }
+    .rate-value { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+    .rate-editable { display: flex; align-items: center; gap: 5px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 5px 8px; margin-bottom: 10px; transition: border-color .15s; }
+    .rate-editable:focus-within { border-color: var(--amber); }
+    .rate-edit-prefix { font-size: 12px; font-weight: 600; color: var(--text2); flex-shrink: 0; }
+    .rate-editable input { flex: 1; background: none; border: none; outline: none; font-family: var(--font); font-size: 13px; font-weight: 700; color: var(--text); min-width: 0; }
+    .rate-divider { height: 1px; background: var(--border); margin-bottom: 10px; }
+    .rate-result-label { font-size: 11px; color: var(--text3); margin-bottom: 3px; }
+    .rate-result { font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+    .conv-hint { font-size: 12px; color: var(--text3); display: flex; align-items: flex-start; gap: 7px; line-height: 1.5; }
+    .conv-hint i { margin-top: 2px; flex-shrink: 0; }
+
+    /* ── SETTINGS ───────────────────────────── */
+    .settings-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 18px; margin-bottom: 10px; }
+    .settings-label   { font-size: 13px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 7px; }
+    .settings-label i { color: var(--green); font-size: 13px; }
+    .settings-desc    { font-size: 13px; color: var(--text2); margin-bottom: 12px; line-height: 1.5; }
+    .rates-summary    { background: var(--bg); border-radius: var(--r-sm); padding: 12px; margin-bottom: 14px; }
+    .rate-summary-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--text2); padding: 5px 0; border-bottom: 1px solid var(--border); }
+    .rate-summary-row:last-child { border-bottom: none; }
+    .btn-action { background: var(--green); border: none; border-radius: var(--r-sm); color: #fff; font-family: var(--font); font-size: 14px; font-weight: 600; padding: 9px 18px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: opacity .15s; }
+    .btn-action:hover { opacity: .85; }
+    .user-row     { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; }
+    .user-initial { width: 36px; height: 36px; background: var(--green-lt); color: var(--green); border: 1px solid #ccddd5; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+    .user-email   { font-size: 14px; font-weight: 500; }
+    .user-role    { font-size: 12px; color: var(--text3); }
+    .btn-logout   { background: none; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--neg); font-family: var(--font); font-size: 13px; font-weight: 500; padding: 8px 14px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: all .12s; }
+    .btn-logout:hover { background: #fdf0f0; border-color: var(--neg); }
+    .install-row  { font-size: 13px; color: var(--text2); padding: 9px 0; border-bottom: 1px solid var(--border); line-height: 1.5; }
+    .install-row:last-child { border-bottom: none; }
+
+    /* ── FAB ────────────────────────────────── */
+    .fab { position: fixed; bottom: 72px; right: 16px; background: var(--green); border: none; border-radius: 50px; color: #fff; font-family: var(--font); font-size: 14px; font-weight: 600; padding: 12px 20px; cursor: pointer; display: flex; align-items: center; gap: 7px; box-shadow: 0 3px 14px rgba(45,106,79,.3); z-index: 50; transition: box-shadow .15s, transform .12s; }
+    .fab:hover { box-shadow: 0 5px 20px rgba(45,106,79,.4); transform: translateY(-1px); }
+    .fab:active { transform: scale(.97); }
+    @media (min-width: 720px) { .fab { bottom: 24px; } }
+
+    /* ── MODAL ──────────────────────────────── */
+    #tx-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.25); align-items: flex-end; justify-content: center; z-index: 100; }
+    @media (min-width: 600px) { #tx-modal { align-items: center; padding: 20px; } .modal-box { border-radius: var(--r) !important; max-height: 90vh; } }
+    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r) var(--r) 0 0; padding: 16px 16px 32px; width: 100%; max-width: 480px; overflow-y: auto; animation: up .2s ease; }
+    .modal-handle { width: 32px; height: 3px; background: var(--border2); border-radius: 2px; margin: 0 auto 14px; }
+    @media (min-width: 600px) { .modal-handle { display: none; } }
+    .modal-head  { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    #modal-title { font-family: var(--serif); font-size: 17px; font-weight: 600; }
+    .modal-x     { width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 50%; background: none; color: var(--text2); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .modal-x:hover { background: var(--bg); }
+    .form-group       { margin-bottom: 11px; }
+    .form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 4px; }
+    .form-group input,
+    .form-group select { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-family: var(--font); font-size: 15px; padding: 9px 12px; outline: none; transition: border-color .15s; -webkit-appearance: none; }
+    .form-group input:focus, .form-group select:focus { border-color: var(--green); }
+    .form-row { display: flex; gap: 8px; }
+    .form-row .form-group { flex: 1; }
+    .type-toggle { display: flex; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 3px; }
+    .type-btn    { flex: 1; padding: 8px; border: none; border-radius: 5px; background: transparent; color: var(--text2); font-family: var(--font); font-size: 14px; font-weight: 500; cursor: pointer; transition: all .15s; display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .type-btn.sel-in  { background: var(--surface); color: var(--pos); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+    .type-btn.sel-out { background: var(--surface); color: var(--neg); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+    .rate-info { font-size: 11px; color: var(--text3); margin-top: 4px; }
+    .btn-save { width: 100%; margin-top: 8px; padding: 12px; background: var(--green); border: none; border-radius: var(--r-sm); color: #fff; font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: opacity .15s; }
+    .btn-save:hover { opacity: .87; }
+
+    /* ── TOAST ──────────────────────────────── */
+    .toast { position: fixed; bottom: -56px; left: 50%; transform: translateX(-50%); background: var(--text); color: #fff; font-size: 13px; font-weight: 500; padding: 9px 18px; border-radius: 20px; transition: bottom .26s ease; white-space: nowrap; z-index: 999; max-width: 90vw; text-align: center; }
+    .toast.show { bottom: 88px; }
+    @media (min-width: 720px) { .toast.show { bottom: 28px; } }
+    .toast.err { background: var(--neg); }
+
+    @keyframes up { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-wrap">
+    <div class="login-brand">
+      <h1>3dproject<span>.ve</span></h1>
+      <p>Gestión financiera</p>
+    </div>
+    <div class="login-form">
+      <div class="field">
+        <label>Correo</label>
+        <input id="email" type="email" placeholder="tu@correo.com" autocomplete="email" />
+      </div>
+      <div class="field">
+        <label>Contraseña</label>
+        <input id="pass" type="password" placeholder="••••••••"
+          autocomplete="current-password"
+          onkeydown="if(event.key==='Enter') doLogin()" />
+      </div>
+      <button id="login-btn" onclick="doLogin()">Ingresar</button>
+      <div id="login-err"></div>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-shell">
+  <div class="topbar">
+    <div class="brand">3dproject<span>.ve</span></div>
+    <div class="topbar-rates">
+      <div class="rate-pill" id="bcv-pill">BCV —</div>
+      <div class="rate-pill" id="par-pill">Par —</div>
+    </div>
+  </div>
+
+  <div class="app-body">
+    <nav class="sidenav">
+      <button class="nav-item active" data-tab="dashboard" onclick="goTab('dashboard')">
+        <i class="fa-solid fa-chart-pie"></i> Inicio
+      </button>
+      <button class="nav-item" data-tab="converter" onclick="goTab('converter')">
+        <i class="fa-solid fa-arrows-left-right"></i> Conversor
+      </button>
+      <button class="nav-item" data-tab="history" onclick="goTab('history')">
+        <i class="fa-solid fa-list-ul"></i> Historial
+      </button>
+      <button class="nav-item" data-tab="settings" onclick="goTab('settings')">
+        <i class="fa-solid fa-gear"></i> Ajustes
+      </button>
+    </nav>
+    <main id="main-content">
+      <div class="empty" style="padding-top:80px">Conectando…</div>
+    </main>
+  </div>
+
+  <nav class="bottomnav">
+    <button class="nav-item active" data-tab="dashboard" onclick="goTab('dashboard')">
+      <i class="fa-solid fa-chart-pie"></i> Inicio
+    </button>
+    <button class="nav-item" data-tab="converter" onclick="goTab('converter')">
+      <i class="fa-solid fa-arrows-left-right"></i> Conversor
+    </button>
+    <button class="nav-item" data-tab="history" onclick="goTab('history')">
+      <i class="fa-solid fa-list-ul"></i> Historial
+    </button>
+    <button class="nav-item" data-tab="settings" onclick="goTab('settings')">
+      <i class="fa-solid fa-gear"></i> Ajustes
+    </button>
+  </nav>
+
+  <button class="fab" onclick="openForm()">
+    <i class="fa-solid fa-plus"></i> Nueva
+  </button>
+</div>
+
+<!-- MODAL -->
+<div id="tx-modal" onclick="if(event.target===this) closeForm()">
+  <div class="modal-box">
+    <div class="modal-handle"></div>
+    <div class="modal-head">
+      <div id="modal-title">Nueva transacción</div>
+      <button class="modal-x" onclick="closeForm()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <form id="tx-form" onsubmit="return false">
+      <div class="form-group">
+        <label>Tipo</label>
+        <div class="type-toggle">
+          <button type="button" class="type-btn sel-in" data-v="Ingreso">
+            <i class="fa-solid fa-arrow-down"></i> Ingreso
+          </button>
+          <button type="button" class="type-btn" data-v="Egreso">
+            <i class="fa-solid fa-arrow-up"></i> Egreso
+          </button>
+        </div>
+        <input type="hidden" id="f-type" value="Ingreso" />
+      </div>
+      <div class="form-group">
+        <label>Concepto</label>
+        <input type="text" id="f-concept" placeholder="Descripción de la transacción" required />
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Monto (USD)</label>
+          <input type="number" id="f-amount" step="0.01" min="0" placeholder="0.00" required />
+        </div>
+        <div class="form-group">
+          <label>Fecha</label>
+          <input type="date" id="f-date" required />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Categoría</label>
+          <select id="f-cat">
+            <option>Ventas</option>
+            <option>Pago a Proveedores</option>
+            <option>Inversión</option>
+            <option>Pago a Socios</option>
+            <option>Gastos Operativos</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Método de pago</label>
+          <select id="f-method">
+            <option>Pago Móvil</option>
+            <option>Zelle</option>
+            <option>Binance</option>
+            <option>PayPal</option>
+            <option>Efectivo</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Tasa Paralelo (editable)</label>
+        <input type="number" id="f-par-rate" step="0.01" placeholder="Se usa la tasa del día automáticamente" />
+        <div class="rate-info" id="form-rate-info"></div>
+      </div>
+      <button type="button" class="btn-save" onclick="saveTx()">
+        <i class="fa-solid fa-floppy-disk"></i> Guardar transacción
+      </button>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+</body>
+</html>
